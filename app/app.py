@@ -1,4 +1,3 @@
-import flask
 import threading
 import stb
 import os
@@ -7,6 +6,7 @@ import subprocess
 import uuid
 import logging
 import xml.etree.cElementTree as ET
+#import flask
 from flask import (
     Flask,
     render_template,
@@ -15,7 +15,8 @@ from flask import (
     Response,
     make_response,
     flash,
-    stream_with_context
+    stream_with_context,
+    jsonify
 )
 import math
 import time
@@ -278,12 +279,31 @@ def home():
 @app.route("/portals", methods=["GET"])
 @authorise
 def portals():
+    """
+    Route to display the portal configuration page.
+
+    This route renders the "portals.html" template, passing the
+    current portal configuration as a JSON object.
+    """
     return render_template("portals.html", portals=getPortals())
 
 
 @app.route("/portal/add", methods=["POST"])
 @authorise
 def portalsAdd():
+    """
+    Adds a new portal configuration.
+
+    Expects the following form values:
+      - name: The name of the portal.
+      - url: The URL of the portal.
+      - macs: A comma-separated list of MAC addresses.
+      - streams per mac: The number of streams per MAC.
+      - epg time offset: The EPG time offset.
+      - proxy: The proxy URL.
+
+    Returns a redirect to the /portals page with a success or danger flash message.
+    """
     id = uuid.uuid4().hex
     enabled = "true"
     name = request.form["name"]
@@ -355,15 +375,60 @@ def portalsAdd():
 @app.route("/portal/update", methods=["POST"])
 @authorise
 def portalUpdate():
+    # Check if the request is JSON (AJAX request from "Parse MAC Addresses" button)
+    if request.is_json:
+        data = request.get_json()
+        id = data.get("id")
+        enabled = data.get("enabled", "false")
+        name = data.get("name")
+        url = data.get("url")
+        proxy = data.get("proxy")
+        streamsPerMac = data.get("streamsPerMac")
+        epgTimeOffset = data.get("epgTimeOffset")
+
+        # Retrieve MAC addresses as a list
+        newmacs = list(set(data.get("macs", [])))
+
+        # Initialize default mac info and prepare response dictionary
+        macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
+        deadmacs = []
+        tested_macs = []
+
+        # Process new MAC addresses and test them
+        for mac in newmacs:
+            macTestSuccess = False
+            token = stb.getToken(url, mac, proxy)
+            if token:
+                stb.getProfile(url, mac, token, proxy)
+                expiry = stb.getExpires(url, mac, token, proxy)
+                if expiry:
+                    macsout[mac]["expiry"] = parseExpieryStr(expiry)
+                    macTestSuccess = True
+                    logger.info(
+                        "Successfully tested MAC({}) for Portal({})".format(mac, name)
+                    )
+                    tested_macs.append({
+                        "mac": mac,
+                        "expiry": macsout[mac]["expiry"],
+                        "stats": {"errors": 0, "playtime": 0, "requests": 0}
+                    })
+                else:
+                    logger.error(
+                        "Error retrieving expiry for MAC({}) in Portal({})".format(mac, name)
+                    )
+            if not macTestSuccess:
+                logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
+                deadmacs.append(mac)
+
+        # Return the tested MAC addresses in JSON format
+        return jsonify({"validMacs": tested_macs})
+
+    # Regular form submission processing
     id = request.form["id"]
     enabled = request.form.get("enabled", "false")
     name = request.form["name"]
     url = request.form["url"]
-    newmacs = list(set(request.form["macs"].split(",")))
-    streamsPerMac = request.form["streams per mac"]
-    epgTimeOffset = request.form["epg time offset"]
     proxy = request.form["proxy"]
-    retest = request.form.get("retest", None)
 
     if not url.endswith(".php"):
         url = stb.getUrl(url, proxy)
@@ -371,15 +436,23 @@ def portalUpdate():
             logger.error("Error getting URL for Portal({})".format(name))
             flash("Error getting URL for Portal({})".format(name), "danger")
             return redirect("/portals", code=302)
+        
+    streamsPerMac = request.form["streams per mac"]
+    epgTimeOffset = request.form["epg time offset"]
+    
+    # Retrieve MACs from the hidden input field in form submission
+    newmacs = list(set(json.loads(request.form["macs"])))
 
+    # Get old MACs for comparision
     portals = getPortals()
     oldmacs = portals[id]["macs"]
+    
+    # Initialize mac info and process new macs
     macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
     deadmacs = []
-
     for mac in newmacs:
-        # Check mac on retest or if it's new 
-        if retest or mac not in oldmacs.keys():
+        # Check mac if it's new 
+        if mac not in oldmacs.keys():
             macTestSuccess = False
             token = stb.getToken(url, mac, proxy)
             if token:
@@ -399,11 +472,11 @@ def portalUpdate():
                 logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
                 flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
                 
-            # if check was unsuccessfull, add to list of dead macs
+            # if check was unsuccessful, add to list of dead macs
             if mac not in macsout.keys():
                 deadmacs.append(mac)
 
-        # keep oldmacs
+        # keep old macs
         if mac in oldmacs.keys() and mac not in deadmacs:
             # if retested, update expiry date but keep statistics
             if mac in macsout.keys():
@@ -427,10 +500,11 @@ def portalUpdate():
 
     else:
         logger.error(
-            "None of the MACs tested OK for Portal({}). Adding not successfull".format(
+            "None of the MACs tested OK for Portal({}). Adding not successful".format(
                 name
             )
         )
+        flash("None of the MACs tested OK for Portal({}). Adding not successful".format(name), "danger")
 
     return redirect("/portals", code=302)
 
@@ -1376,9 +1450,9 @@ if __name__ == "__main__":
     if debugMode or ("TERM_PROGRAM" in os.environ.keys() and os.environ["TERM_PROGRAM"] == "vscode"):
         # If DEBUG is active or code running In VS Code, use default flask development sever in debug mode
         logger.info("ATTENTION: Server started in debug mode. Don't use on productive systems!")
-        #app.run(host="0.0.0.0", port=8001, debug=True)
+        app.run(host="0.0.0.0", port=8001, debug=True, use_reloader=True)
         # Note: Flask server in debug mode can lead to errors in vscode debugger ([errno 98] address in use)
-        app.run(host="0.0.0.0", port=8001, debug=False)
+        #app.run(host="0.0.0.0", port=8001, debug=False)
     else:
         # On release use waitress server with multi-threading
         waitress.serve(app, port=8001, _quiet=True, threads=24)

@@ -2,11 +2,13 @@ version: '3.4'
 
 services:
   stbproxy:
-    image: stbproxy
+    image: stb-proxy
     build:
       context: .
       dockerfile: ./Dockerfile
       target: release
+    environment:
+        - TZ=Europe/Berlin
     volumes:
         - ./config:/config
     ports:
