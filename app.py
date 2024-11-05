@@ -71,12 +71,16 @@ defaultSettings = {
     "hdhr tuners": "1",
 }
 
+# Definition for default mac entry
+default_mac_info = {"expiry": None, "stats": {"playtime": 0, "errors": 0, "requests": 0}}
+
 defaultPortal = {
     "enabled": "true",
     "name": "",
     "url": "",
     "macs": {},
     "streams per mac": "1",
+    "epgTimeOffset": "0",
     "proxy": "",
     "enabled channels": [],
     "custom channel names": {},
@@ -89,6 +93,35 @@ defaultPortal = {
 
 
 def loadConfig():
+    
+    def check_and_convert_macs(data):
+        macs_data = defaultdict(lambda: copy.deepcopy(default_mac_info))
+        
+        def update_values(default_dict, data_dict):
+            for key, value in default_dict.items():
+                if isinstance(value, dict):
+                    if key in data_dict and isinstance(data_dict[key], dict):
+                        update_values(default_dict[key], data_dict[key])
+                else:
+                    if key in data_dict:
+                        default_dict[key] = data_dict[key]
+        
+        for mac, mac_data in data.items():
+            if not isinstance(mac_data, dict):
+                newdict = copy.deepcopy(default_mac_info)
+                if isinstance(mac_data, str):
+                    timestamp = parseExpieryStr(mac_data)
+                    newdict["expiry"] = timestamp
+                elif isinstance(mac_data, (int, float)):
+                    newdict["expiry"] = mac_data
+                else:
+                    logger.error("Unable to get expiry date for MAC ({}) from old config data.".format(mac))
+                macs_data[mac] = newdict
+            else:
+                update_values(macs_data[mac], mac_data)
+        
+        return macs_data
+
     try:
         with open(configFile) as f:
             data = json.load(f)
@@ -193,18 +226,38 @@ def home():
 @app.route("/portals", methods=["GET"])
 @authorise
 def portals():
+    """
+    Route to display the portal configuration page.
+
+    This route renders the "portals.html" template, passing the
+    current portal configuration as a JSON object.
+    """
     return render_template("portals.html", portals=getPortals())
 
 
 @app.route("/portal/add", methods=["POST"])
 @authorise
 def portalsAdd():
+    """
+    Adds a new portal configuration.
+
+    Expects the following form values:
+      - name: The name of the portal.
+      - url: The URL of the portal.
+      - macs: A comma-separated list of MAC addresses.
+      - streams per mac: The number of streams per MAC.
+      - epg time offset: The EPG time offset.
+      - proxy: The proxy URL.
+
+    Returns a redirect to the /portals page with a success or danger flash message.
+    """
     id = uuid.uuid4().hex
     enabled = "true"
     name = request.form["name"]
     url = request.form["url"]
     macs = list(set(request.form["macs"].split(",")))
     streamsPerMac = request.form["streams per mac"]
+    epgTimeOffset = request.form["epg time offset"]
     proxy = request.form["proxy"]
     time_zone = request.form["time_zone"]
 
@@ -242,6 +295,7 @@ def portalsAdd():
             "url": url,
             "macs": macsd,
             "streams per mac": streamsPerMac,
+            "epgTimeOffset": epgTimeOffset,
             "proxy": proxy,
             "time_zone": time_zone,
         }
@@ -268,6 +322,55 @@ def portalsAdd():
 @app.route("/portal/update", methods=["POST"])
 @authorise
 def portalUpdate():
+    # Check if the request is JSON (AJAX request from "Parse MAC Addresses" button)
+    if request.is_json:
+        data = request.get_json()
+        id = data.get("id")
+        enabled = data.get("enabled", "false")
+        name = data.get("name")
+        url = stb.getUrl(data.get("url"))
+        proxy = data.get("proxy")
+        streamsPerMac = data.get("streamsPerMac")
+        epgTimeOffset = data.get("epgTimeOffset")
+
+        # Retrieve MAC addresses as a list
+        newmacs = list(set(data.get("macs", [])))
+
+        # Initialize default mac info and prepare response dictionary
+        macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
+        deadmacs = []
+        tested_macs = []
+
+        # Process new MAC addresses and test them
+        for mac in newmacs:
+            macTestSuccess = False
+            token = stb.getToken(url, mac, proxy)
+            if token:
+                stb.getProfile(url, mac, token, proxy)
+                expiry = stb.getExpires(url, mac, token, proxy)
+                if expiry:
+                    macsout[mac]["expiry"] = parseExpieryStr(expiry)
+                    macTestSuccess = True
+                    logger.info(
+                        "Successfully tested MAC({}) for Portal({})".format(mac, name)
+                    )
+                    tested_macs.append({
+                        "mac": mac,
+                        "expiry": macsout[mac]["expiry"],
+                        "stats": {"errors": 0, "playtime": 0, "requests": 0}
+                    })
+                else:
+                    logger.error(
+                        "Error retrieving expiry for MAC({}) in Portal({})".format(mac, name)
+                    )
+            if not macTestSuccess:
+                logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
+                deadmacs.append(mac)
+
+        # Return the tested MAC addresses in JSON format
+        return jsonify({"validMacs": tested_macs})
+
+    # Regular form submission processing
     id = request.form["id"]
     enabled = request.form.get("enabled", "false")
     name = request.form["name"]
@@ -283,6 +386,8 @@ def portalUpdate():
         logger.error("Error getting URL for Portal({})".format(name))
         flash("Error getting URL for Portal({})".format(name), "danger")
         return redirect("/portals", code=302)
+
+    epgTimeOffset = request.form["epg time offset"]
 
     portals = getPortals()
     oldmacs = portals[id]["macs"]
@@ -321,6 +426,7 @@ def portalUpdate():
         portals[id]["url"] = url
         portals[id]["macs"] = macsout
         portals[id]["streams per mac"] = streamsPerMac
+        portals[id]["epgTimeOffset"] = epgTimeOffset
         portals[id]["proxy"] = proxy
         portals[id]["time_zone"] = time_zone
         savePortals(portals)
@@ -676,6 +782,7 @@ def xmltv():
                 macs = list(portals[portal]["macs"].keys())
                 proxy = portals[portal]["proxy"]
                 time_zone = portals[portal]["time_zone"]
+                epgTimeOffset = float(portals[portal]["epgTimeOffset"])
                 customChannelNames = portals[portal].get("custom channel names", {})
                 customEpgIds = portals[portal].get("custom epg ids", {})
 
@@ -714,13 +821,13 @@ def xmltv():
                                             datetime.utcfromtimestamp(
                                                 p.get("start_timestamp")
                                             ).strftime("%Y%m%d%H%M%S")
-                                            + " +0000"
+                                            + " " + float_to_time_stamp(epgTimeOffset)
                                         )
                                         stop = (
                                             datetime.utcfromtimestamp(
                                                 p.get("stop_timestamp")
                                             ).strftime("%Y%m%d%H%M%S")
-                                            + " +0000"
+                                            + " " + float_to_time_stamp(epgTimeOffset)
                                         )
                                         programmeEle = ET.SubElement(
                                             programmes,
