@@ -208,12 +208,11 @@ def portalsAdd():
     proxy = request.form["proxy"]
     time_zone = request.form["time_zone"]
 
-    if not url.endswith(".php"):
-        url = stb.getUrl(url, proxy)
-        if not url:
-            logger.error("Error getting URL for Portal({})".format(name))
-            flash("Error getting URL for Portal({})".format(name), "danger")
-            return redirect("/portals", code=302)
+    url = stb.getUrl(url, proxy)
+    if not url:
+        logger.error("Error getting URL for Portal({})".format(name))
+        flash("Error getting URL for Portal({})".format(name), "danger")
+        return redirect("/portals", code=302)
 
     macsd = {}
 
@@ -279,12 +278,11 @@ def portalUpdate():
     time_zone = request.form["time_zone"]
     retest = request.form.get("retest", None)
 
-    if not url.endswith(".php"):
-        url = stb.getUrl(url, proxy)
-        if not url:
-            logger.error("Error getting URL for Portal({})".format(name))
-            flash("Error getting URL for Portal({})".format(name), "danger")
-            return redirect("/portals", code=302)
+    url = stb.getUrl(url, proxy)
+    if not url:
+        logger.error("Error getting URL for Portal({})".format(name))
+        flash("Error getting URL for Portal({})".format(name), "danger")
+        return redirect("/portals", code=302)
 
     portals = getPortals()
     oldmacs = portals[id]["macs"]
