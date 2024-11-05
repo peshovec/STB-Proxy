@@ -63,9 +63,9 @@ def getUrl(url, proxy=None):
         pass
 
 
-def getToken(url, mac, proxy=None):
+def getToken(url, mac, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {"User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)"}
     try:
         response = s.get(
@@ -81,9 +81,9 @@ def getToken(url, mac, proxy=None):
         pass
 
 
-def getProfile(url, mac, token, proxy=None):
+def getProfile(url, mac, token, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
@@ -102,9 +102,9 @@ def getProfile(url, mac, token, proxy=None):
         pass
 
 
-def getExpires(url, mac, token, proxy=None):
+def getExpires(url, mac, token, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
@@ -129,9 +129,9 @@ def getExpires(url, mac, token, proxy=None):
         pass
 
 
-def getAllChannels(url, mac, token, proxy=None):
+def getAllChannels(url, mac, token, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
@@ -151,9 +151,9 @@ def getAllChannels(url, mac, token, proxy=None):
         pass
 
 
-def getGenres(url, mac, token, proxy=None):
+def getGenres(url, mac, token, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
@@ -172,9 +172,9 @@ def getGenres(url, mac, token, proxy=None):
         pass
 
 
-def getGenreNames(url, mac, token, proxy=None):
+def getGenreNames(url, mac, token, proxy=None, t_zone=None):
     try:
-        genreData = getGenres(url, mac, token, proxy)
+        genreData = getGenres(url, mac, token, proxy, t_zone)
         genres = {}
         for i in genreData:
             gid = i["id"]
@@ -186,9 +186,9 @@ def getGenreNames(url, mac, token, proxy=None):
         pass
 
 
-def getLink(url, mac, token, cmd, proxy=None):
+def getLink(url, mac, token, cmd, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
@@ -211,9 +211,9 @@ def getLink(url, mac, token, cmd, proxy=None):
         pass
 
 
-def getEpg(url, mac, token, period, proxy=None):
+def getEpg(url, mac, token, period, proxy=None, t_zone=None):
     proxies = {"http": proxy, "https": proxy}
-    cookies = {"mac": mac, "stb_lang": "en", "timezone": "Europe/London"}
+    cookies = {"mac": mac, "stb_lang": "en", "timezone": t_zone}
     headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)",
         "Authorization": "Bearer " + token,
