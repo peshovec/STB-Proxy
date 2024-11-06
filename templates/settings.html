@@ -66,6 +66,16 @@
 
         <br><br>
 
+        <h6>Check MAC expiration:</h6>
+        <div class="col-md-2">
+            <div class="form-check form-switch">
+                <input form="save" type="checkbox" class="checkbox form-check-input" name="check expiration" value="true" {{ "checked" if settings['check expiration']=='true' }}>
+            </div>
+        </div>
+        <span class="text-muted">Check expiration date of mac adresses.</span>
+
+        <br><br>
+
         <h6>Try All MAC's:</h6>
         <div class="col-md-2">
             <div class="form-check form-switch">

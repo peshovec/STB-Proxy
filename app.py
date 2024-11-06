@@ -15,10 +15,16 @@ from flask import (
     make_response,
     flash,
 )
+import math
+import time
+import requests
 from datetime import datetime, timezone
+from dateutil.parser import parse
 from functools import wraps
 import secrets
 import waitress
+from collections import defaultdict
+import copy
 
 app = Flask(__name__)
 app.secret_key = secrets.token_urlsafe(32)
@@ -78,7 +84,7 @@ defaultPortal = {
     "enabled": "true",
     "name": "",
     "url": "",
-    "macs": {},
+    "macs": defaultdict(lambda: default_mac_info),
     "streams per mac": "1",
     "epgTimeOffset": "0",
     "proxy": "",
@@ -135,10 +141,10 @@ def loadConfig():
     settings = data["settings"]
     settingsOut = {}
 
-    for setting, default in defaultSettings.items():
+    for setting, defaultData in defaultSettings.items():
         value = settings.get(setting)
-        if not value or type(default) != type(value):
-            value = default
+        if not value or type(defaultData) != type(value):
+            value = copy.copy(defaultData)
         settingsOut[setting] = value
 
     data["settings"] = settingsOut
@@ -146,13 +152,16 @@ def loadConfig():
     portals = data["portals"]
     portalsOut = {}
 
-    for portal in portals:
-        portalsOut[portal] = {}
-        for setting, default in defaultPortal.items():
-            value = portals[portal].get(setting)
-            if not value or type(default) != type(value):
-                value = default
-            portalsOut[portal][setting] = value
+    for portal, loadedData in portals.items():
+        mergedPortalData = {}
+        for setting, defaultData in defaultPortal.items():
+            value = loadedData.get(setting)
+            if setting == "macs":
+                value = check_and_convert_macs(value)
+            if not value or type(defaultData) != type(value):
+                value = copy.copy(defaultData)
+            mergedPortalData[setting] = value
+        portalsOut[portal] = mergedPortalData
 
     data["portals"] = portalsOut
 
@@ -161,7 +170,37 @@ def loadConfig():
 
     return data
 
+def parseExpieryStr(date_string):
+    try:
+        # We need dateutil, because the date format is not unique all portals
+        # date_obj = datetime.strptime(date_string, "%B %d, %Y, %I:%M %p")
+        date_obj = parse(date_string)
+        # Convert the datetime object to a Unix timestamp
+        timestamp = date_obj.timestamp()
+        return timestamp
+    except ValueError:
+        logger.info("Unable to parse expiration date ({})".format(date_string))
+        return None
 
+def checkExpiration(expieryStr):
+    def timeLeft(timestamp):
+        try:
+            # Calculate the time difference in seconds
+            current_time = datetime.now().timestamp()
+            difference = current_time - timestamp
+            return difference
+        except Exception as e:
+            return None
+    
+    expTimestamp = parseExpieryStr(expieryStr)
+    timeLeft = timeLeft(expTimestamp)
+    
+    if timeLeft > 0:
+        daysLeft = math.floor(timeLeft / (60 * 60 * 24))
+        return False, daysLeft
+    else:
+        return True, 0
+        
 def getPortals():
     return config["portals"]
 
@@ -255,7 +294,8 @@ def portalsAdd():
     enabled = "true"
     name = request.form["name"]
     url = request.form["url"]
-    macs = list(set(request.form["macs"].split(",")))
+    # macs = list(set(request.form["macs"].split(",")))
+    macs = list(set(json.loads(request.form["macs"])))
     streamsPerMac = request.form["streams per mac"]
     epgTimeOffset = request.form["epg time offset"]
     proxy = request.form["proxy"]
@@ -267,15 +307,17 @@ def portalsAdd():
         flash("Error getting URL for Portal({})".format(name), "danger")
         return redirect("/portals", code=302)
 
-    macsd = {}
+    macsd = defaultdict(lambda: copy.deepcopy(default_mac_info))
 
     for mac in macs:
-        token = stb.getToken(url, mac, proxy, time_zone)
+        macTestSuccess = False
+        token = stb.getToken(url, mac, proxy)
         if token:
             stb.getProfile(url, mac, token, proxy, time_zone)
             expiry = stb.getExpires(url, mac, token, proxy, time_zone)
             if expiry:
-                macsd[mac] = expiry
+                macsd[mac]["expiry"] = parseExpieryStr(expiry)
+                macTestSuccess = True
                 logger.info(
                     "Successfully tested MAC({}) for Portal({})".format(mac, name)
                 )
@@ -283,10 +325,9 @@ def portalsAdd():
                     "Successfully tested MAC({}) for Portal({})".format(mac, name),
                     "success",
                 )
-                continue
-
-        logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
-        flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
+        if not macTestSuccess:
+            logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
+            flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
 
     if len(macsd) > 0:
         portal = {
@@ -332,6 +373,7 @@ def portalUpdate():
         proxy = data.get("proxy")
         streamsPerMac = data.get("streamsPerMac")
         epgTimeOffset = data.get("epgTimeOffset")
+        time_zone = data.get("time_zone")
 
         # Retrieve MAC addresses as a list
         newmacs = list(set(data.get("macs", [])))
@@ -368,17 +410,15 @@ def portalUpdate():
                 deadmacs.append(mac)
 
         # Return the tested MAC addresses in JSON format
-        return jsonify({"validMacs": tested_macs})
+        return flask.jsonify({"validMacs": tested_macs})
 
     # Regular form submission processing
     id = request.form["id"]
     enabled = request.form.get("enabled", "false")
     name = request.form["name"]
     url = request.form["url"]
-    newmacs = list(set(request.form["macs"].split(",")))
     streamsPerMac = request.form["streams per mac"]
     proxy = request.form["proxy"]
-    time_zone = request.form["time_zone"]
     retest = request.form.get("retest", None)
 
     url = stb.getUrl(url, proxy)
@@ -387,21 +427,31 @@ def portalUpdate():
         flash("Error getting URL for Portal({})".format(name), "danger")
         return redirect("/portals", code=302)
 
+    streamsPerMac = request.form["streams per mac"]
     epgTimeOffset = request.form["epg time offset"]
+    time_zone = request.form["time_zone"]
+    
+    # Retrieve MACs from the hidden input field in form submission
+    newmacs = list(set(json.loads(request.form["macs"])))
 
     portals = getPortals()
     oldmacs = portals[id]["macs"]
-    macsout = {}
+    
+    # Initialize mac info and process new macs
+    macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
     deadmacs = []
 
     for mac in newmacs:
-        if retest or mac not in oldmacs.keys():
-            token = stb.getToken(url, mac, proxy, time_zone)
+        # Check mac if it's new 
+        if mac not in oldmacs.keys():
+            macTestSuccess = False
+            token = stb.getToken(url, mac, proxy)
             if token:
                 stb.getProfile(url, mac, token, proxy, time_zone)
                 expiry = stb.getExpires(url, mac, token, proxy, time_zone)
                 if expiry:
-                    macsout[mac] = expiry
+                    macsout[mac]["expiry"] = parseExpieryStr(expiry)
+                    macTestSuccess = True
                     logger.info(
                         "Successfully tested MAC({}) for Portal({})".format(mac, name)
                     )
@@ -409,16 +459,22 @@ def portalUpdate():
                         "Successfully tested MAC({}) for Portal({})".format(mac, name),
                         "success",
                     )
-
-            if mac not in list(macsout.keys()):
+            if not macTestSuccess:
+                logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
+                flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
+                
+            # if check was unsuccessful, add to list of dead macs
+            if mac not in macsout.keys():
                 deadmacs.append(mac)
 
         if mac in oldmacs.keys() and mac not in deadmacs:
-            macsout[mac] = oldmacs[mac]
-
-        if mac not in macsout.keys():
-            logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
-            flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
+            # if retested, update expiry date but keep statistics
+            if mac in macsout.keys():
+                updated_expiry = macsout[mac]["expiry"]
+                macsout[mac] = oldmacs[mac]
+                macsout[mac]["expiry"] = updated_expiry
+            else:
+                macsout[mac] = oldmacs[mac]
 
     if len(macsout) > 0:
         portals[id]["enabled"] = enabled
@@ -439,6 +495,7 @@ def portalUpdate():
                 name
             )
         )
+        flash("None of the MACs tested OK for Portal({}). Adding not successful".format(name), "danger")
 
     return redirect("/portals", code=302)
 
@@ -770,6 +827,16 @@ def playlist():
 @app.route("/xmltv", methods=["GET"])
 @authorise
 def xmltv():
+    
+    def float_to_time_stamp(decimal_hours):
+        hours = int(decimal_hours)
+        minutes = int((decimal_hours - hours) * 60)
+        
+        sign = '+' if hours >= 0 else '-'
+        hours = abs(hours)
+        
+        return f"{sign}{hours:02d}{minutes:02d}"
+    
     channels = ET.Element("tv")
     programmes = ET.Element("tv")
     portals = getPortals()
