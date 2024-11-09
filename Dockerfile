@@ -11,6 +11,7 @@ RUN apk add \
 RUN pip3 install \
 	flask \
 	requests \
+        python.dateutil \
 	waitress
 
 # Copy files
