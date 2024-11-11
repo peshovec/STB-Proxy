@@ -9,6 +9,7 @@ services:
       target: release
     environment:
         - TZ=Europe/Berlin
+        #- HOST=[MY_HOSTNAME]:8001 # Uncomment and set this to forward to a specific host name (optional)
     volumes:
         - ./config:/config
     ports:

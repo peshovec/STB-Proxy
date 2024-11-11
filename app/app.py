@@ -6,7 +6,7 @@ import subprocess
 import uuid
 import logging
 import xml.etree.cElementTree as ET
-#import flask
+import flask
 from flask import (
     Flask,
     render_template,
@@ -110,8 +110,6 @@ defaultPortal = {
     "fallback channels": {},
 }
 
-
-maxWaitTimeFree = 5  # Time to wait for freed mac
 bufferSize = 1024  # Buffer size in bytes (1024=1kB)
 
 def loadConfig():
@@ -232,7 +230,7 @@ def saveSettings(settings):
     with open(configFile, "w") as f:
         config["settings"] = settings
         json.dump(config, f, indent=4)
-
+        
 
 def authorise(f):
     @wraps(f)
@@ -270,6 +268,281 @@ def moveMac(portalId, mac):
     savePortals(portals)
 
 
+def test_mac_addresses(url, proxy, macs, name):
+    """
+    Tests a list of MAC addresses, returns the valid MACs and dead MACs.
+    """
+    dead_macs = []
+    valid_macs = []
+
+    for mac in macs:
+        mac_test_success = False
+        token = stb.getToken(url, mac, proxy)
+        if token:
+            stb.getProfile(url, mac, token, proxy)
+            expiry = stb.getExpires(url, mac, token, proxy)
+            if expiry:
+                mac_test_success = True
+                logger.info(f"Successfully tested MAC({mac}) for Portal({name})")
+                valid_macs.append({
+                    "mac": mac,
+                    "expiry": parseExpieryStr(expiry),
+                })
+            else:
+                logger.error(f"Error retrieving expiry for MAC({mac}) in Portal({name})")
+        if not mac_test_success:
+            logger.error(f"Error testing MAC({mac}) for Portal({name})")
+            flash(f"Error testing MAC({mac}) for Portal({name})", "danger")
+            dead_macs.append(mac)
+
+    return valid_macs, dead_macs
+
+
+def portal_update_macs(portal, macs=None, retest=False):
+    # Retrieve old MAC addresses from portal
+    old_macs_dict = portal["macs"]
+    
+    old_macs_set = set(old_macs_dict.keys() if old_macs_dict else [])
+    new_macs_set = set(macs if macs else [])
+    common_macs = list(new_macs_set & old_macs_set)     # Intersection of new_macs and old_macs
+    unique_new_macs = list(new_macs_set - old_macs_set) # Difference: new_macs - old_macs
+
+    # Determine MACs to test based on retest flag and new_macs input
+    if retest:
+        # If retest is True, test both old and any new MACs if provided
+        macs_to_test = common_macs + unique_new_macs
+        common_macs = []
+    else:
+        # Only test new MACs if retest is False
+        macs_to_test = unique_new_macs
+        
+    if not macs_to_test:
+        # No MACs to test, exit function
+        logger.info(f"No new MAC addresses in Portal({portal['name']}) found")
+        flash(f"No new MAC addresses in Portal({portal['name']}) found", "warning")
+
+    # Test MAC addresses
+    valid_macs, dead_macs = test_mac_addresses(portal["url"], portal["proxy"], macs_to_test, portal["name"])
+    for mac, data in old_macs_dict.items():
+        if mac in common_macs and mac not in valid_macs:
+            valid_macs.append({'mac': mac, 'expiry': data['expiry']})
+        if mac in dead_macs:
+            logger.info(f"Dead MAC({mac}) for Portal({portal['name']}) has been removed.")
+            flash(f"Dead MAC({mac}) for Portal({portal['name']}) has been removed.", "success")
+            
+    # Initialize mac info structure and process results
+    macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
+
+    for entry in valid_macs:
+        mac = entry["mac"]
+        expiry = entry["expiry"] 
+
+        if mac in old_macs_dict:
+            # Keep stats for existing MACs and update expiry date
+            macsout[mac] = old_macs_dict[mac]
+            macsout[mac]["expiry"] = expiry
+            if mac in unique_new_macs:
+                logger.info(f"Successfully updated MAC({mac}) for Portal({portal['name']})")
+                flash(f"Successfully updated MAC({mac}) for Portal({portal['name']})", "success")
+        else:
+            # Add new MAC address with blank stats
+            macsout[mac]["expiry"] = expiry
+            logger.info(f"Successfully added MAC({mac}) to Portal({portal['name']})")
+            flash(f"Successfully added MAC({mac}) to Portal({portal['name']})", "success")
+
+    # Update the portal's MAC list
+    portal["macs"] = macsout
+
+    # Return the updated portal object
+    return portal
+
+
+def getFreeMac(portalId):
+    
+    # Portal data
+    portals = getPortals()
+    portal = portals.get(portalId)
+    
+    macs = list(portal["macs"].keys())
+    
+    for mac in macs:
+        if isMacFree(portalId, mac):
+            return mac
+
+
+def isMacFree(portalId, mac):
+    maxWaitTimeFree = 5  # Time to wait for freed mac
+    
+    # Portal data
+    portals = getPortals()
+    portal = portals.get(portalId)
+    
+    streamsPerMac = int(portal.get("streams per mac"))
+    
+    # When changing channels, it takes a while until the stream is finished and the Mac address gets released    
+    checkInterval=0.1
+    maxIterations = max(math.ceil(maxWaitTimeFree/checkInterval),1)
+    for _ in range(maxIterations):
+        count = 0
+        for i in occupied.get(portalId, []):
+            if i["mac"] == mac:
+                count = count + 1
+        if count < streamsPerMac:
+            return True
+        else:
+            time.sleep(0.1)
+    return False 
+
+
+def getChannel(portalId, channelId):
+    # Portal data
+    portals = getPortals()
+    portal = portals.get(portalId)
+    
+    portalName = portal.get("name")
+    macs = list(portal["macs"].keys())
+
+    freeMac = False
+    channelName = None
+    link = None
+    for mac in macs:
+        freeMac = isMacFree(portalId, mac)
+        if freeMac:
+            channelName, link = getChannelByMac(portalId, channelId, mac)
+            if link:
+                return channelName, link, mac
+        
+        # Try with next mac address
+        moveMac(portalId, mac)
+
+        if not getSettings().get("try all macs", "false") == "true":
+            break
+        
+    if freeMac:
+        logger.info(
+            "No working streams found for Portal({}):Channel({})".format(
+                portalId, channelId
+            )
+        )
+    else:
+        logger.info(
+            "No free MAC for Portal({}):Channel({})".format(portalId, channelId)
+        )
+
+    return channelName, link, mac
+
+
+def getChannelByMac(portalId, channelId, mac):
+    # Portal data
+    portals = getPortals()
+    portal = portals.get(portalId)
+    
+    portalName = portal.get("name")
+    url = portal.get("url")
+    streamsPerMac = int(portal.get("streams per mac"))
+    proxy = portal.get("proxy")
+
+    freeMac = False
+    channels = None
+    cmd = None
+    link = None
+    if streamsPerMac == 0 or isMacFree(portalId, mac):
+        logger.info(
+            "Trying to get Link for Portal({}):MAC({}):Channel({})".format(portalId, mac, channelId)
+        )
+        freeMac = True
+        token = stb.getToken(url, mac, proxy)
+        if token:
+            stb.getProfile(url, mac, token, proxy)
+            channels = stb.getAllChannels(url, mac, token, proxy)
+    else:
+        logger.info(
+            "Maximum streams for MAC({}) in use.".format(mac)
+        )
+    if channels:
+        for c in channels:
+            if str(c["id"]) == channelId:
+                channelName = portal.get("custom channel names", {}).get(channelId)
+                if channelName == None:
+                    channelName = c["name"]
+                cmd = c["cmd"]
+                break
+
+    if cmd:
+        if "http://localhost/" in cmd:
+            link = stb.getLink(url, mac, token, cmd, proxy)
+        else:
+            link = cmd.split(" ")[1]
+            
+    if link:
+        logger.info(
+            "Link for Channel ""{}"" on Portal({}) using MAC({}) found: {}".format(channelName, portalId, mac, link)
+        )
+        
+    else:
+        if freeMac:
+            logger.info(
+                "Unable to get Link for Channel-ID({}) on Portal({}) using MAC({})".format(channelId, portalId, mac)
+            )
+        else:
+            logger.info(
+                "MAC ({}) is not free for Portal({})".format(mac, portalId)
+            )
+
+    return channelName, link
+
+
+def testStream(link, proxy=None):
+    timeout = int(getSettings()["stream timeout"]) * int(1000000)
+    ffprobecmd = ["ffprobe", "-timeout", str(timeout), "-i", link]
+
+    if proxy:
+        ffprobecmd.insert(1, "-http_proxy")
+        ffprobecmd.insert(2, proxy)
+
+    with subprocess.Popen(
+        ffprobecmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as ffprobe_sb:
+        ffprobe_sb.communicate()
+        if ffprobe_sb.returncode == 0:
+            return True
+        else:
+            return False
+
+
+def testMacs(portalId, channelId):
+    
+    # Portal data
+    portals = getPortals()
+    portal = portals.get(portalId)
+    
+    portalName = portal.get("name")
+    url = portal.get("url")
+    macs = list(portal["macs"].keys())
+
+    proxy = portal.get("proxy")
+    
+    
+    workingMacs = []
+    brokenMacs = []
+    occupiedMacs = []
+    for mac in macs:
+        macIsFree = isMacFree(portalId, mac)
+        channelName, link = getChannelByMac(portalId, channelId, mac)
+        if not macIsFree:
+            occupiedMacs.append(mac)
+        if link:
+            if testStream(link, proxy):
+                workingMacs.append(mac)
+            else:
+                brokenMacs.append(mac)
+
+    return workingMacs, brokenMacs, occupiedMacs
+
+# Webinterface routes
 @app.route("/", methods=["GET"])
 @authorise
 def home():
@@ -281,246 +554,203 @@ def home():
 def portals():
     """
     Route to display the portal configuration page.
-
-    This route renders the "portals.html" template, passing the
-    current portal configuration as a JSON object.
     """
     return render_template("portals.html", portals=getPortals())
 
 
 @app.route("/portal/add", methods=["POST"])
 @authorise
-def portalsAdd():
+def portals_add():
     """
     Adds a new portal configuration.
-
-    Expects the following form values:
-      - name: The name of the portal.
-      - url: The URL of the portal.
-      - macs: A comma-separated list of MAC addresses.
-      - streams per mac: The number of streams per MAC.
-      - epg time offset: The EPG time offset.
-      - proxy: The proxy URL.
-
-    Returns a redirect to the /portals page with a success or danger flash message.
     """
-    id = uuid.uuid4().hex
-    enabled = "true"
-    name = request.form["name"]
-    url = request.form["url"]
-    macs = list(set(request.form["macs"].split(",")))
-    streamsPerMac = request.form["streams per mac"]
-    epgTimeOffset = request.form["epg time offset"]
-    proxy = request.form["proxy"]
-
+    name = request.form.get("name")
+    url = request.form.get("url")
+    proxy = request.form.get("proxy")
+    streams_per_mac = request.form.get("streams per mac")
+    epg_time_offset = request.form.get("epg time offset")
+    macs_data = request.form.get("macs", "[]")
+    try:
+        macs = json.loads(macs_data) if macs_data else []
+    except json.JSONDecodeError:
+        error_message = f"Error getting MAC data for Portal({name})"
+        logger.error(error_message)
+        return jsonify({"error": error_message}), 400
+    
+    # Check name, url and macs
+    if not name or not url or not macs:
+        error_message = "Can't add Portal. Name, URL and MACs are required"
+        logger.error(error_message)
+        return jsonify({"error": error_message}), 400
+    
+    # Validate and retrieve the URL
     if not url.endswith(".php"):
         url = stb.getUrl(url, proxy)
         if not url:
-            logger.error("Error getting URL for Portal({})".format(name))
-            flash("Error getting URL for Portal({})".format(name), "danger")
-            return redirect("/portals", code=302)
+            error_message = f"Error getting URL for Portal({name})"
+            logger.error(error_message)
+            return jsonify({"error": error_message}), 400
 
-    macsd = defaultdict(lambda: copy.deepcopy(default_mac_info))
+    # Create new Portal
+    portal = {
+        "enabled": "true",
+        "name": name,
+        "url": url,
+        "macs": [],
+        "streams per mac": streams_per_mac,
+        "epgTimeOffset": epg_time_offset,
+        "proxy": proxy,
+    }
+    # Add MACs
+    portal = portal_update_macs(portal, macs=macs)
 
-    for mac in macs:
-        macTestSuccess = False
-        token = stb.getToken(url, mac, proxy)
-        if token:
-            stb.getProfile(url, mac, token, proxy)
-            expiry = stb.getExpires(url, mac, token, proxy)
-            if expiry:
-                macsd[mac]["expiry"] = parseExpieryStr(expiry)
-                macTestSuccess = True
-                logger.info(
-                    "Successfully tested MAC({}) for Portal({})".format(mac, name)
-                )
-                flash(
-                    "Successfully tested MAC({}) for Portal({})".format(mac, name),
-                    "success",
-                )
-        if not macTestSuccess:
-            logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
-            flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
+    # Add Default settings
+    for setting, default in defaultPortal.items():
+        if setting not in portal:
+            portal[setting] = default
 
-    if len(macsd) > 0:
-        portal = {
-            "enabled": enabled,
-            "name": name,
-            "url": url,
-            "macs": macsd,
-            "streams per mac": streamsPerMac,
-            "epgTimeOffset": epgTimeOffset,
-            "proxy": proxy,
-        }
-
-        for setting, default in defaultPortal.items():
-            if not portal.get(setting):
-                portal[setting] = default
-
+    if len(portal["macs"]) > 0:
+        # Save new portal
         portals = getPortals()
-        portals[id] = portal
+        portals[uuid.uuid4().hex] = portal
         savePortals(portals)
-        logger.info("Portal({}) added!".format(portal["name"]))
-
+        
+        logger.info(f"Portal({portal['name']}) added!")
+        return jsonify({"success": f"Portal({portal['name']}) successfully added!"}), 200
     else:
-        logger.error(
-            "None of the MACs tested OK for Portal({}). Adding not successfull".format(
-                name
-            )
-        )
-
-    return redirect("/portals", code=302)
+        error_message = f"None of the MACs tested OK for Portal({name}). Adding not successful"
+        logger.error(error_message)
+        return jsonify({"error": error_message}), 400
 
 
-@app.route("/portal/update", methods=["POST"])
+@app.route("/portal/checkmacs", methods=["POST"])
 @authorise
-def portalUpdate():
-    # Check if the request is JSON (AJAX request from "Parse MAC Addresses" button)
+def portal_checkmacs():
     if request.is_json:
+        # Handling the JSON (AJAX) request
         data = request.get_json()
         id = data.get("id")
-        enabled = data.get("enabled", "false")
         name = data.get("name")
         url = data.get("url")
         proxy = data.get("proxy")
-        streamsPerMac = data.get("streamsPerMac")
-        epgTimeOffset = data.get("epgTimeOffset")
 
-        # Retrieve MAC addresses as a list
-        newmacs = list(set(data.get("macs", [])))
+        new_macs = data.get("macs")
 
-        # Initialize default mac info and prepare response dictionary
-        macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
-        deadmacs = []
-        tested_macs = []
+        # Validate and retrieve the URL
+        if not url.endswith(".php"):
+            url = stb.getUrl(url, proxy)
+            if not url:
+                return jsonify({"error": "Invalid URL"}), 400
 
-        # Process new MAC addresses and test them
-        for mac in newmacs:
-            macTestSuccess = False
-            token = stb.getToken(url, mac, proxy)
-            if token:
-                stb.getProfile(url, mac, token, proxy)
-                expiry = stb.getExpires(url, mac, token, proxy)
-                if expiry:
-                    macsout[mac]["expiry"] = parseExpieryStr(expiry)
-                    macTestSuccess = True
-                    logger.info(
-                        "Successfully tested MAC({}) for Portal({})".format(mac, name)
-                    )
-                    tested_macs.append({
-                        "mac": mac,
-                        "expiry": macsout[mac]["expiry"],
-                        "stats": {"errors": 0, "playtime": 0, "requests": 0}
-                    })
-                else:
-                    logger.error(
-                        "Error retrieving expiry for MAC({}) in Portal({})".format(mac, name)
-                    )
-            if not macTestSuccess:
-                logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
-                deadmacs.append(mac)
+        # Test MAC addresses
+        valid_macs, dead_macs = test_mac_addresses(url, proxy, new_macs, name)
 
-        # Return the tested MAC addresses in JSON format
-        return jsonify({"validMacs": tested_macs})
-
-    # Regular form submission processing
-    id = request.form["id"]
-    enabled = request.form.get("enabled", "false")
-    name = request.form["name"]
-    url = request.form["url"]
-    proxy = request.form["proxy"]
-
-    if not url.endswith(".php"):
-        url = stb.getUrl(url, proxy)
-        if not url:
-            logger.error("Error getting URL for Portal({})".format(name))
-            flash("Error getting URL for Portal({})".format(name), "danger")
-            return redirect("/portals", code=302)
-        
-    streamsPerMac = request.form["streams per mac"]
-    epgTimeOffset = request.form["epg time offset"]
-    
-    # Retrieve MACs from the hidden input field in form submission
-    newmacs = list(set(json.loads(request.form["macs"])))
-
-    # Get old MACs for comparision
-    portals = getPortals()
-    oldmacs = portals[id]["macs"]
-    
-    # Initialize mac info and process new macs
-    macsout = defaultdict(lambda: copy.deepcopy(default_mac_info))
-    deadmacs = []
-    for mac in newmacs:
-        # Check mac if it's new 
-        if mac not in oldmacs.keys():
-            macTestSuccess = False
-            token = stb.getToken(url, mac, proxy)
-            if token:
-                stb.getProfile(url, mac, token, proxy)
-                expiry = stb.getExpires(url, mac, token, proxy)
-                if expiry:
-                    macsout[mac]["expiry"] = parseExpieryStr(expiry)
-                    macTestSuccess = True
-                    logger.info(
-                        "Successfully tested MAC({}) for Portal({})".format(mac, name)
-                    )
-                    flash(
-                        "Successfully tested MAC({}) for Portal({})".format(mac, name),
-                        "success",
-                    )
-            if not macTestSuccess:
-                logger.error("Error testing MAC({}) for Portal({})".format(mac, name))
-                flash("Error testing MAC({}) for Portal({})".format(mac, name), "danger")
-                
-            # if check was unsuccessful, add to list of dead macs
-            if mac not in macsout.keys():
-                deadmacs.append(mac)
-
-        # keep old macs
-        if mac in oldmacs.keys() and mac not in deadmacs:
-            # if retested, update expiry date but keep statistics
-            if mac in macsout.keys():
-                updated_expiry = macsout[mac]["expiry"]
-                macsout[mac] = oldmacs[mac]
-                macsout[mac]["expiry"] = updated_expiry
-            else:
-                macsout[mac] = oldmacs[mac]
-
-    if len(macsout) > 0:
-        portals[id]["enabled"] = enabled
-        portals[id]["name"] = name
-        portals[id]["url"] = url
-        portals[id]["macs"] = macsout
-        portals[id]["streams per mac"] = streamsPerMac
-        portals[id]["epgTimeOffset"] = epgTimeOffset
-        portals[id]["proxy"] = proxy
-        savePortals(portals)
-        logger.info("Portal({}) updated!".format(name))
-        flash("Portal({}) updated!".format(name), "success")
-
+        # Return the tested MACs in JSON format
+        return jsonify({"validMacs": valid_macs})
     else:
-        logger.error(
-            "None of the MACs tested OK for Portal({}). Adding not successful".format(
-                name
-            )
-        )
-        flash("None of the MACs tested OK for Portal({}). Adding not successful".format(name), "danger")
+        # Show message if the request is not JSON
+        return jsonify({"error": "Invalid request"}), 400
+
+
+@app.route("/portal/addmacs", methods=["POST"])
+@authorise
+def portal_addmacs():
+    name = request.form.get("name")
+    id = request.form.get("id")
+    url = request.form.get("url")
+    proxy = request.form.get("proxy")
+
+    macs = json.loads(request.form.get("macs", "[]"))
+
+    # Update portal with new data
+    portals = getPortals()
+    portal = portals[id]
+
+    # If url or proxy has changed, retest all MACs
+    if portal["url"] != url or portal["proxy"] != proxy:
+        retest = True
+    else:
+        retest = False
+
+    # Update MACs based on retest option
+    portal = portal_update_macs(portal, macs=macs, retest=retest)
+
+    # Save updated portal if MACs are valid
+    if len(portal["macs"]) > 0:
+        savePortals(portals)
+        logger.info(f"Successfully added MACs to Portal ""{name}""!")
+    else:
+        logger.error(f"No MACs tested OK for Portal({name}). Update skipped!")
+        flash(f"No MACs tested OK for Portal({name}). Update skipped!", "danger")
+
+    return 302
+
+
+@app.route("/portal/update", methods=["POST", "GET"])
+@authorise
+def portal_update():
+    """
+    Updates the portal configuration, with optional retest of all MAC addresses.
+    """
+    # Handling the form submission (POST) or button call with query parameter (GET)
+    id = request.args.get("id") or request.form.get("id")
+    retest = request.args.get("retest", "false").lower() == "true"  # Check for 'retest' in URL
+
+    # Retrieve form data (only for POST request)
+    enabled = request.form.get("enabled", "false")
+    name = request.form.get("name")
+    url = request.form.get("url")
+    proxy = request.form.get("proxy")
+    streams_per_mac = request.form.get("streams per mac")
+    epg_time_offset = request.form.get("epg time offset")
+    macs = json.loads(request.form.get("macs", "[]"))
+    
+    # Update portal with new data
+    portals = getPortals()
+    portal = portals[id]
+
+    # If url or proxy has changed, retest all MACs
+    if portal["url"] != url or portal["proxy"] != proxy:
+        retest = True
+
+    portal["enabled"] = enabled
+    portal["name"] = name
+    portal["url"] = url
+    portal["proxy"] = proxy
+    portal["streams per mac"] = streams_per_mac
+    portal["epgTimeOffset"] = epg_time_offset
+
+    # Update MACs based on retest option
+    portal = portal_update_macs(portal, macs=macs, retest=retest)
+
+    # Save updated portal if MACs are valid
+    if len(portal["macs"]) > 0:
+        savePortals(portals)
+        logger.info(f"Portal({name}) updated!")
+        flash(f"Portal({name}) updated!", "success")
+    else:
+        logger.error(f"None of the MACs tested OK for Portal({name}). Update skipped!")
+        flash(f"None of the MACs tested OK for Portal({name}). Update skipped!", "danger")
 
     return redirect("/portals", code=302)
 
 
-@app.route("/portal/remove", methods=["POST"])
+@app.route("/portal/remove", methods=["POST", "GET"])
 @authorise
-def portalRemove():
-    id = request.form["deleteId"]
+def portal_remove():
+    """
+    Removes a portal.
+    """
+    # Handling the form submission (POST) or button call with query parameter (GET)
+    id = request.args.get("id") or request.form.get("id")
+
     portals = getPortals()
     name = portals[id]["name"]
     del portals[id]
     savePortals(portals)
-    logger.info("Portal ({}) removed!".format(name))
-    flash("Portal ({}) removed!".format(name), "success")
+    logger.info(f"Portal ({name}) removed!")
+    flash(f"Portal ({name}) removed!", "success")
     return redirect("/portals", code=302)
-
 
 @app.route("/editor", methods=["GET"])
 @authorise
@@ -617,7 +847,6 @@ def editor_data():
     data = {"data": channels}
 
     return flask.jsonify(data)
-
 
 @app.route("/editor/save", methods=["POST"])
 @authorise
@@ -1131,41 +1360,6 @@ def channel(portalId, channelId):
                 moveMac(portalId, mac)
             savePortals(portals)
 
-    def testStream():
-        timeout = int(getSettings()["stream timeout"]) * int(1000000)
-        ffprobecmd = ["ffprobe", "-timeout", str(timeout), "-i", link]
-
-        if proxy:
-            ffprobecmd.insert(1, "-http_proxy")
-            ffprobecmd.insert(2, proxy)
-
-        with subprocess.Popen(
-            ffprobecmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ) as ffprobe_sb:
-            ffprobe_sb.communicate()
-            if ffprobe_sb.returncode == 0:
-                return True
-            else:
-                return False
-
-    def isMacFree():
-        # When changing channels, it takes a while until the stream is finished and the Mac address gets released    
-        checkInterval=0.1
-        maxIterations = max(math.ceil(maxWaitTimeFree/checkInterval),1)
-        for _ in range(maxIterations):
-            count = 0
-            for i in occupied.get(portalId, []):
-                if i["mac"] == mac:
-                    count = count + 1
-            if count < streamsPerMac:
-                return True
-            else:
-                time.sleep(0.1)
-        return False 
-
     # client info from request
     web = request.args.get("web")
     ip = request.remote_addr
@@ -1184,58 +1378,25 @@ def channel(portalId, channelId):
         "IP({}) requested Portal({}):Channel({})".format(ip, portalId, channelId)
     )
 
-    freeMac = False
-    for mac in macs:
-        channels = None
-        cmd = None
-        link = None
-        if streamsPerMac == 0 or isMacFree():
-            logger.info(
-                "Trying Portal({}):MAC({}):Channel({})".format(portalId, mac, channelId)
-            )
-            freeMac = True
-            token = stb.getToken(url, mac, proxy)
-            if token:
-                stb.getProfile(url, mac, token, proxy)
-                channels = stb.getAllChannels(url, mac, token, proxy)
-        else:
-            logger.info(
-                "Maximum streams for MAC({}) in use.".format(mac)
-            )
-        if channels:
-            for c in channels:
-                if str(c["id"]) == channelId:
-                    channelName = portal.get("custom channel names", {}).get(channelId)
-                    if channelName == None:
-                        channelName = c["name"]
-                    cmd = c["cmd"]
-                    break
-
-        if cmd:
-            if "http://localhost/" in cmd:
-                link = stb.getLink(url, mac, token, cmd, proxy)
+    channelName, link, mac = getChannel(portalId, channelId)
+    if link:
+        if getSettings().get("test streams", "true") == "false" or testStream(link, proxy):
+            # update statistics
+            portal["macs"][mac]["stats"]["requests"] += 1
+            savePortals(portals)
+            
+            # start streaming
+            if getSettings().get("stream method", "ffmpeg") != "redirect":
+                return Response(
+                    stream_with_context(streamData()), mimetype="application/octet-stream"
+                )
             else:
-                link = cmd.split(" ")[1]
-
-        if link:
-            if getSettings().get("test streams", "true") == "false" or testStream():
-                    portal["macs"][mac]["stats"]["requests"] += 1
-                    savePortals(portals)
-                    if getSettings().get("stream method", "ffmpeg") != "redirect":
-                        return Response(
-                            stream_with_context(streamData()), mimetype="application/octet-stream"
-                        )
-                    else:
-                        logger.info("Redirect sent")
-                        return redirect(link)
-        logger.info(
-            "Unable to connect to Portal({}) using MAC({})".format(portalId, mac)
-        )
-        # Try with next mac address
-        moveMac(portalId, mac)
-
-        if not getSettings().get("try all macs", "false") == "true":
-            break
+                logger.info("Redirect sent")
+                return redirect(link)
+            
+    logger.info(
+        "Unable to connect to Portal({}) using MAC({})".format(portalId, mac)
+    )
 
     # Look for fallback 
     if not web:
@@ -1245,69 +1406,48 @@ def channel(portalId, channelId):
             )
         )
 
-        for portal in portals:
-            if portals[portal]["enabled"] == "true":
-                fallbackChannels = portals[portal]["fallback channels"]
+        for fportal in portals.values():
+            if fportal["enabled"] == "true":
+                fportalId = fportal.get("id")
+                proxy = fportal.get("proxy")
+                fallbackChannels = fportal.get("fallback channels")
                 if channelName in fallbackChannels.values():
-                    
-                    url = portals[portal].get("url")
-                    macs = list(portals[portal]["macs"].keys())
-                    proxy = portals[portal].get("proxy")
-                    for mac in macs:
-                        channels = None
-                        cmd = None
-                        link = None
-                        if streamsPerMac == 0 or isMacFree():
-                            for k, v in fallbackChannels.items():
-                                if v == channelName:
-                                    try:
-                                        token = stb.getToken(url, mac, proxy)
-                                        stb.getProfile(url, mac, token, proxy)
-                                        channels = stb.getAllChannels(
-                                            url, mac, token, proxy
+                    for k, v in fallbackChannels.items():
+                        if v == channelName:
+                            fChannelId = k
+                            fChannelName = v
+                            try:
+                                channelName, link, mac = getChannel(fportalId, fChannelId)
+                            except:
+                                link = None
+                                channelName = None
+                                logger.info(
+                                    "Unable to connect to fallback Portal({})".format(fportalId)
+                                )
+                            if link:
+                                if testStream(link, proxy):
+                                    logger.info(
+                                        "Fallback found for Portal({}):Channel({})".format(fportalId, fChannelId)
+                                    )
+                                    # update statistics
+                                    fportal["macs"][mac]["stats"]["requests"] += 1
+                                    savePortals(portals)
+                                    
+                                    # start streaming
+                                    if getSettings().get("stream method", "ffmpeg") != "redirect":
+                                        return Response(
+                                            stream_with_context(streamData()),
+                                            mimetype="application/octet-stream",
                                         )
-                                    except:
-                                        logger.info(
-                                            "Unable to connect to fallback Portal({}) using MAC({})".format(portalId, mac)
-                                        )
-                                    if channels:
-                                        fChannelId = k
-                                        for c in channels:
-                                            if str(c["id"]) == fChannelId:
-                                                cmd = c["cmd"]
-                                                break
-                                        if cmd:
-                                            if "http://localhost/" in cmd:
-                                                link = stb.getLink(url, mac, token, cmd, proxy)
-                                            else:
-                                                link = cmd.split(" ")[1]
-                                            if link:
-                                                if testStream():
-                                                    logger.info(
-                                                        "Fallback found for Portal({}):Channel({})".format(portalId, channelId)
-                                                    )
-                                                    portal["macs"][mac]["stats"]["requests"] += 1
-                                                    savePortals(portals)
-                                                    if getSettings().get("stream method", "ffmpeg") != "redirect":
-                                                        return Response(
-                                                            stream_with_context(streamData()),
-                                                            mimetype="application/octet-stream",
-                                                        )
-                                                    else:
-                                                        logger.info("Redirect sent")
-                                                        return redirect(link)
+                                    else:
+                                        logger.info("Redirect sent")
+                                        return redirect(link)
 
-    if freeMac:
-        logger.info(
-            "No working streams found for Portal({}):Channel({})".format(
-                portalId, channelId
-            )
-        )
-    else:
-        logger.info(
-            "No free MAC for Portal({}):Channel({})".format(portalId, channelId)
-        )
+    logger.info(
+        "No fallback found for Portal({}):Channel({})".format(portalId, channelId)
+    )
 
+    # No stream available
     return make_response("No streams available", 503)
 
 
@@ -1332,8 +1472,6 @@ def log():
 
 
 # HD Homerun #
-
-
 def hdhr(f):
     @wraps(f)
     def decorated(*args, **kwargs):

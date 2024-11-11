@@ -1,7 +1,7 @@
 ##########
 # BASE
 ##########
-FROM python:3.11-apline AS base
+FROM python:3.12-alpine AS base
 
 ENV HOST=localhost
 ENV CONFIG=/config/config.json

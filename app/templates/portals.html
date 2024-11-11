@@ -3,10 +3,12 @@
 
 <div class="container-fluid p-lg-5">
     <div>
-        <button class="btn btn-success btn-block" title="Add Portal" id="openModal" data-bs-toggle="modal"
-            data-action="add"><i class="fa fa-plus"></i> Add Portal</button>
+        <!-- Button to add new Portal. This opens modal (id "modalForm") with action "add" -->
+        <button class="btn btn-success btn-block" title="Add Portal" id="addPortal" data-bs-toggle="modal" data-bs-target="#modalForm" data-action="add">
+            <i class="fa fa-plus"></i> 
+            Add Portal
+        </button>
     </div>
-
     <br>
 
     <div class="row row-cols-auto" id="streamOut">
@@ -15,13 +17,16 @@
         {% for portal in portals %}
         <div class="col">
             <div class="card text-dark bg-light mb-3">
-                <div class="card-header btn text-start stretched-link" data-id="{{ portal }}"
-                    data-enabled="{{ portals[portal].enabled }}" data-name="{{ portals[portal].name }}"
-                    data-url="{{ portals[portal].url }}" data-proxy="{{ portals[portal].proxy }}"
+                <!-- Click on card to edit Portal. This opens modal (id "modalForm") with action "edit" and adds portal data -->
+                <div class="card-header btn text-start stretched-link" data-id="{{ portal }}" data-bs-toggle="modal" data-bs-target="#modalForm" data-action="edit" 
+                    data-enabled="{{ portals[portal].enabled }}" 
+                    data-name="{{ portals[portal].name }}"
+                    data-url="{{ portals[portal].url }}" 
+                    data-proxy="{{ portals[portal].proxy }}"
                     data-macs="{{ portals[portal].macs|tojson|forceescape }}" 
-                    data-streamsPerMac="{{ portals[portal]['streams per mac'] }}" data-bs-toggle="modal"
-                    data-epgTimeOffset="{{ portals[portal].epgTimeOffset }}" data-action="edit"
-                    data-bs-target="#modalForm">
+                    data-streamsPerMac="{{ portals[portal]['streams per mac'] }}" 
+                    data-epgTimeOffset="{{ portals[portal].epgTimeOffset }}" 
+                >
                     <i class="me-2 fa fa-server" {{ "hidden" if portals[portal].enabled == 'false' }}></i>
                     <i class="me-2 fa fa-ban" {{ "hidden" if portals[portal].enabled == 'true' }}></i>
                     {{ portals[portal].name }}
@@ -103,13 +108,13 @@
 
 <!-- Unified Add/Edit Modal -->
 <div class="modal fade text-dark" id="modalForm" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-lg" style="max-width: 600px; width: auto; min-width: 400px;">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="modalTitle">Add/Edit Portal</h5>
                 <div class="form-check form-switch ms-auto">
                     <input type="checkbox" form="portalForm" class="form-check-input" name="enabled"
-                        id="modalEnabled" value="true">
+                        id="modalEnabled" value="true" style="transform: scale(1.5);">
                 </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
@@ -151,12 +156,11 @@
                         </tbody>
                     </table>
                     <textarea id="macInput" class="form-control" rows="3"
-                        placeholder="Enter MAC addresses or text here"></textarea>
-                    <button type="button" class="btn btn-primary mt-2" id="parseMacBtn">Parse MAC Addresses</button>
-                    <button type="button" class="btn btn-warning mt-2 ms-2" id="modalRetestBtn">Retest</button>
+                        placeholder="Enter MAC addresses as text here..."></textarea>
+                    <button type="button" class="btn btn-primary mt-2" id="parseMacBtn">Add MAC Addresses</button>
 
                     <!-- Hidden input to store MAC addresses -->
-                    <input type="hidden" name="macs" id="macsHiddenInput">
+                    <input type="hidden" name="macs" id="macsHiddenData">
 
                     <br><br>
 
@@ -178,8 +182,14 @@
                         <button class="btn btn-danger" id="modalDelete" type="button">Delete</button>
                         <button class="btn btn-warning" id="modalRetestBtn" type="button">Retest</button>
                         <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
-                        <button class="btn btn-primary" id="modalSubmit" type="submit" onclick="prepareMacsData()">Save</button>
+                        <button class="btn btn-primary" id="modalSubmit" type="submit" onclick="updateMacData()">Save</button>
                     </div>
+
+                    <!-- Error message for the modal -->
+                    <div id="modalErrorMessage" class="alert alert-danger" style="display:none;"></div>
+
+                    <!-- Success message for the modal (optional) -->
+                    <div id="modalSuccessMessage" class="alert alert-success" style="display:none;"></div>
                 </form>
             </div>
         </div>
@@ -201,7 +211,8 @@
         var deleteButton = document.getElementById('modalDelete');
         var retestButton = document.getElementById('modalRetestBtn');
         var title = document.getElementById('modalTitle');
-
+    
+        // Standard action for adding a new portal
         if (action === 'add') {
             form.action = "/portal/add";
             form.reset();
@@ -209,18 +220,49 @@
             submitButton.textContent = "Add";
             deleteButton.style.display = 'none';
             retestButton.style.display = 'none';
-
+    
             var macList = document.getElementById('macList');
             macList.innerHTML = '';
 
+            // Submit button to add new Portal
+            submitButton.onclick = function () {
+                form.action = "/portal/add";
+
+                // Gather form data and send the AJAX request to the server
+                const formData = new FormData(form);
+
+                fetch('/portal/add', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        // If response status is not OK, throw an error to catch with error message
+                        return response.json().then(err => { throw new Error(err.error); });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Optionally, close the modal after success
+                    var myModal = new bootstrap.Modal(document.getElementById('modalForm'));
+                    myModal.hide();
+                })
+                .catch(error => {
+                    console.error('Error adding portal:', error);
+                    // Display error message to user
+                    alert('Error: ' + error.message); // or display in a specific HTML element
+                });
+            };
+
         } else if (action === 'edit') {
+            // Action for editing an existing portal
             form.action = "/portal/update";
             title.textContent = "Edit Portal";
             submitButton.textContent = "Update";
             deleteButton.style.display = 'block';
             retestButton.style.display = 'block';
-
-            // Fill in form with existing data
+    
+            // Fill form with existing data
             var id = button.getAttribute('data-id');
             var name = button.getAttribute('data-name');
             var enabled = button.getAttribute('data-enabled');
@@ -229,7 +271,7 @@
             var macs = JSON.parse(button.getAttribute('data-macs'));
             var streamsPerMac = button.getAttribute('data-streamsPerMac');
             var epgTimeOffset = button.getAttribute('data-epgTimeOffset');
-
+    
             document.getElementById('modalId').value = id;
             document.getElementById('modalName').value = name;
             document.getElementById('modalEnabled').checked = (enabled === 'true');
@@ -237,25 +279,38 @@
             document.getElementById('modalProxy').value = proxy;
             document.getElementById('modalStreamsPerMac').value = streamsPerMac;
             document.getElementById('modalEpgTimeOffset').value = epgTimeOffset;
-
+    
             var macList = document.getElementById('macList');
             macList.innerHTML = '';
-
             Object.keys(macs).forEach((mac, index) => {
                 var data = macs[mac];
                 addMacRow(mac, data, index);
             });
-        }
 
+            // Event listener for Delete button
+            deleteButton.onclick = function () {
+                form.action = "/portal/remove?id="+id;
+                form.submit();
+            };
+
+            // Event listener for Retest button
+            retestButton.onclick = function () {
+                updateMacData()
+                form.action = "/portal/update?id=" + id + "&retest=true";
+                form.submit();
+            };
+        
+            // Event listener for Update button (without retest)
+            submitButton.onclick = function () {
+                updateMacData()
+                form.action = "/portal/update?id=" + id + "&retest=false";
+                form.submit();
+            };
+
+
+        }
         var myModal = new bootstrap.Modal(modal, { backdrop: 'static' });
         myModal.show();
-    }
-
-    // Function to prepare the MAC addresses data before form submission
-    function prepareMacsData() {
-        const macList = document.getElementById('macList');
-        const macs = Array.from(macList.querySelectorAll('tr')).map(row => row.cells[0].textContent);
-        document.getElementById('macsHiddenInput').value = JSON.stringify(macs);
     }
 
     // Function to parse MAC addresses and test them with a server call
@@ -266,58 +321,113 @@
 
         if (macMatches) {
             // Make AJAX request to test the new MAC addresses
-            fetch('/portal/update', {
+            fetch('/portal/checkmacs', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    macs: macMatches,
                     id: document.getElementById('modalId').value,
                     name: document.getElementById('modalName').value,
                     url: document.getElementById('modalUrl').value,
                     proxy: document.getElementById('modalProxy').value,
-                    streamsPerMac: document.getElementById('modalStreamsPerMac').value,
-                    epgTimeOffset: document.getElementById('modalEpgTimeOffset').value,
-                    enabled: document.getElementById('modalEnabled').checked ? 'true' : 'false',
+                    macs: macMatches
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    // If response status is not OK, throw an error to catch with error message
+                    return response.json().then(err => { throw new Error(err.error); });
+                }
+                return response.json();
+            })
             .then(data => {
-                // Update the MAC table with the response data
-                var macList = document.getElementById('macList');
-                macList.innerHTML = '';
+                // Update the MAC table with the response data without deleting existing rows
                 data.validMacs.forEach((elem, index) => {
-                    addMacRow(elem.mac, { expiry: elem.expiry, stats: elem.stats }, index);
+                    // Check if the MAC address is already in the table, if not, add it
+                    if (!isMacInTable(elem.mac)) {
+                        // Handle missing stats or expiry by setting default values
+                        var expiry = elem.expiry || 0;
+                        var stats = elem.stats || { playtime: 0, errors: 0, requests: 0 };
+
+                        addMacRow(elem.mac, { expiry: expiry, stats: stats }, index);
+                    }
                 });
                 document.getElementById('macInput').value = '';
+                updateMacData();
             })
             .catch(error => {
                 console.error('Error testing MAC addresses:', error);
+                // Display error message to user
+                alert('Error: ' + error.message); // or display in a specific HTML element
             });
         } else {
             alert('No valid MAC addresses found.');
         }
     });
 
+    
+    // Function to display the error message inside the modal
+    function displayErrorMessage(message) {
+        var errorElement = document.getElementById('modalErrorMessage');
+        errorElement.textContent = message;
+        errorElement.style.display = 'block';
+    }
+
+    // Function to display the success message inside the modal (if necessary)
+    function displaySuccessMessage(message) {
+        var successElement = document.getElementById('modalSuccessMessage');
+        successElement.textContent = message;
+        successElement.style.display = 'block';
+    }
+
+    // Function to prepare the MAC addresses data before form submission
+    function updateMacData() {
+        const macList = document.getElementById('macList');
+        const macs = Array.from(macList.querySelectorAll('tr')).map(row => row.querySelector('td').textContent.trim());
+        document.getElementById('macsHiddenData').value = JSON.stringify(macs);
+    }
+
+    // Function to check if a MAC address is already in the table
+    function isMacInTable(mac) {
+        var macList = document.getElementById('macList');
+        var rows = macList.getElementsByTagName('tr');
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var macCell = row.getElementsByTagName('td')[0]; // MAC address is in the first column
+            if (macCell && macCell.textContent === mac) {
+                return true; // MAC address already exists
+            }
+        }
+        return false; // MAC address not found in the table
+    }
+    
     // Function to add a row in the MAC table
     function addMacRow(mac, data, index) {
         var macList = document.getElementById('macList');
+        
         var row = document.createElement('tr');
-
+    
         var macCell = document.createElement('td');
         macCell.textContent = mac;
-
+        row.appendChild(macCell);
+    
         var expiryCell = document.createElement('td');
         expiryCell.textContent = formatExpiry(data.expiry);
-
+        row.appendChild(expiryCell);
+    
         var playtimeCell = document.createElement('td');
         playtimeCell.textContent = formatPlaytime(data.stats.playtime);
-
+        row.appendChild(playtimeCell);
+    
         var errorCell = document.createElement('td');
         errorCell.textContent = formatErrorRate(data.stats.errors, data.stats.requests);
+        row.appendChild(errorCell);
 
+        // ACTION ELEMENTS
         var actionCell = document.createElement('td');
+
+        // Move MAC up
         var upButton = document.createElement('button');
         upButton.className = 'btn btn-sm btn-light p-0 me-1';
         upButton.innerHTML = '<i class="bx bx-chevron-up"></i>';
@@ -328,9 +438,11 @@
             if (row.previousElementSibling) {
                 macList.insertBefore(row, row.previousElementSibling);
                 updateButtonStates(macList);
+                updateMacData();
             }
         });
 
+        // Move MAC down
         var downButton = document.createElement('button');
         downButton.className = 'btn btn-sm btn-light p-0 me-1';
         downButton.innerHTML = '<i class="bx bx-chevron-down"></i>';
@@ -341,9 +453,11 @@
             if (row.nextElementSibling) {
                 macList.insertBefore(row.nextElementSibling, row);
                 updateButtonStates(macList);
+                updateMacData();
             }
         });
 
+        // Delete MAC
         var deleteButton = document.createElement('button');
         deleteButton.className = 'btn btn-sm btn-light p-0 me-1';
         deleteButton.innerHTML = '<i class="bx bx-x bx-tada-hover" style="color:red;"></i>';
@@ -352,22 +466,19 @@
             e.preventDefault();
             row.remove();
             updateButtonStates(macList);
+            updateMacData();
         });
-
+    
         actionCell.appendChild(upButton);
         actionCell.appendChild(downButton);
         actionCell.appendChild(deleteButton);
-
-        row.appendChild(macCell);
-        row.appendChild(expiryCell);
-        row.appendChild(playtimeCell);
-        row.appendChild(errorCell);
+    
         row.appendChild(actionCell);
-
+    
         macList.appendChild(row);
         updateButtonStates(macList);
     }
-
+   
     function updateButtonStates(macList) {
         Array.from(macList.rows).forEach((row, index) => {
             var upButton = row.querySelector('.bx-chevron-up').parentElement;
