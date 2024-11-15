@@ -1016,6 +1016,7 @@ def playlist():
                             epgId = customEpgIds.get(channelId)
                             if epgId == None:
                                 epgId = portal + channelId
+                            logo_url = channel.get("logo")
                             channels.append(
                                 "#EXTINF:-1"
                                 + ' tvg-id="'
@@ -1026,6 +1027,7 @@ def playlist():
                                     == "true"
                                     else ""
                                 )
+                                + (' tvg-logo="' + logo_url + '"' if logo_url else "")
                                 + (
                                     '" group-title="' + genre
                                     if getSettings().get("use channel genres", "true")
