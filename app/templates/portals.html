@@ -24,6 +24,7 @@
                     data-url="{{ portals[portal].url }}" 
                     data-proxy="{{ portals[portal].proxy }}"
                     data-macs="{{ portals[portal].macs|tojson|forceescape }}" 
+                    data-time_zone="{{ portals[portal].time_zone }}"
                     data-streamsPerMac="{{ portals[portal]['streams per mac'] }}" 
                     data-epgTimeOffset="{{ portals[portal].epgTimeOffset }}" 
                 >
@@ -168,13 +169,19 @@
                     <input type="number" name="streams per mac" id="modalStreamsPerMac" class="form-control flex-fill"
                         title="Streams Per Mac" min="0" value="1" required>
                     <span class="text-muted">How many streams does each MAC allow. 0 = unlimited.</span>
-
+                    
                     <br><br>
 
                     <h6>EPG Time Offset:</h6>
                     <input type="number" name="epg time offset" id="modalEpgTimeOffset" class="form-control flex-fill"
                         title="EPG Time Offset" min="-12" max="14" step="0.5" value="0" required>
                     <span class="text-muted">Time offset for XMLTV EPG data (Reference UTC). Range: -12 to +14, in 0.5-hour increments.</span>
+
+                    <br><br>
+
+                    <h6>Timezone:</h6>
+                    <input type="text" name="time_zone" id="modalTimeZone" class="form-control flex-fill" title="Timezone" value="Europe/London" required> 
+                    <span class="text-muted">Optional Timezone.</span>
 
                     <br><br>
 
@@ -271,6 +278,7 @@
             var macs = JSON.parse(button.getAttribute('data-macs'));
             var streamsPerMac = button.getAttribute('data-streamsPerMac');
             var epgTimeOffset = button.getAttribute('data-epgTimeOffset');
+            var time_zone = button.getAttribute('data-time_zone');
     
             document.getElementById('modalId').value = id;
             document.getElementById('modalName').value = name;
@@ -279,6 +287,7 @@
             document.getElementById('modalProxy').value = proxy;
             document.getElementById('modalStreamsPerMac').value = streamsPerMac;
             document.getElementById('modalEpgTimeOffset').value = epgTimeOffset;
+            document.getElementById('modalTimeZone').value = time_zone;
     
             var macList = document.getElementById('macList');
             macList.innerHTML = '';
