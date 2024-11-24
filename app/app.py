@@ -973,93 +973,90 @@ def save():
 @app.route("/playlist", methods=["GET"])
 @authorise
 def playlist():
+    # Initialize the list to store channel information
     channels = []
     portals = getPortals()
-    for portal in portals:
-        if portals[portal]["enabled"] == "true":
-            enabledChannels = portals[portal].get("enabled channels", [])
-            if len(enabledChannels) != 0:
-                name = portals[portal]["name"]
-                url = portals[portal]["url"]
-                macs = list(portals[portal]["macs"].keys())
-                proxy = portals[portal]["proxy"]
-                customChannelNames = portals[portal].get("custom channel names", {})
-                customGenres = portals[portal].get("custom genres", {})
-                customChannelNumbers = portals[portal].get("custom channel numbers", {})
-                customEpgIds = portals[portal].get("custom epg ids", {})
 
-                for mac in macs:
-                    try:
-                        token = stb.getToken(url, mac, proxy)
-                        stb.getProfile(url, mac, token, proxy)
-                        allChannels = stb.getAllChannels(url, mac, token, proxy)
-                        genres = stb.getGenreNames(url, mac, token, proxy)
-                        break
-                    except:
-                        allChannels = None
-                        genres = None
+    # Iterate over all portals
+    for portal_name, portal_data in portals.items():
+        if portal_data["enabled"] != "true":
+            continue
 
-                if allChannels and genres:
-                    for channel in allChannels:
-                        channelId = str(channel.get("id"))
-                        if channelId in enabledChannels:
-                            channelName = customChannelNames.get(channelId)
-                            if channelName == None:
-                                channelName = str(channel.get("name"))
-                            genre = customGenres.get(channelId)
-                            if genre == None:
-                                genreId = str(channel.get("tv_genre_id"))
-                                genre = str(genres.get(genreId))
-                            channelNumber = customChannelNumbers.get(channelId)
-                            if channelNumber == None:
-                                channelNumber = str(channel.get("number"))
-                            epgId = customEpgIds.get(channelId)
-                            if epgId == None:
-                                epgId = portal + channelId
-                            logo_url = channel.get("logo")
-                            channels.append(
-                                "#EXTINF:-1"
-                                + ' tvg-id="'
-                                + epgId
-                                + (
-                                    '" tvg-chno="' + channelNumber
-                                    if getSettings().get("use channel numbers", "true")
-                                    == "true"
-                                    else ""
-                                )
-                                + (' tvg-logo="' + logo_url + '"' if logo_url else "")
-                                + (
-                                    '" group-title="' + genre
-                                    if getSettings().get("use channel genres", "true")
-                                    == "true"
-                                    else ""
-                                )
-                                + '",'
-                                + channelName
-                                + "\n"
-                                + "http://"
-                                + host
-                                + "/play/"
-                                + portal
-                                + "/"
-                                + channelId
-                            )
-                else:
-                    logger.error("Error making playlist for {}, skipping".format(name))
+        enabled_channels = portal_data.get("enabled channels", [])
+        if not enabled_channels:
+            continue
 
+        # Extract portal-specific settings
+        name = portal_data["name"]
+        url = portal_data["url"]
+        macs = list(portal_data["macs"].keys())
+        proxy = portal_data["proxy"]
+        custom_channel_names = portal_data.get("custom channel names", {})
+        custom_genres = portal_data.get("custom genres", {})
+        custom_channel_numbers = portal_data.get("custom channel numbers", {})
+        custom_epg_ids = portal_data.get("custom epg ids", {})
+
+        # Retrieve channel and genre data for the first valid MAC
+        all_channels, genres = None, None
+        for mac in macs:
+            try:
+                token = stb.getToken(url, mac, proxy)
+                stb.getProfile(url, mac, token, proxy)
+                all_channels = stb.getAllChannels(url, mac, token, proxy)
+                genres = stb.getGenreNames(url, mac, token, proxy)
+                break  # Exit the loop if data retrieval succeeds
+            except Exception as e:
+                logger.warning(f"Failed to retrieve data for MAC {mac}: {e}")
+                continue
+
+        # Skip processing if channel or genre data is unavailable
+        if not all_channels or not genres:
+            logger.error(f"Error making playlist for {name}, skipping")
+            continue
+
+        # Process each channel in the portal
+        for channel in all_channels:
+            channel_id = str(channel.get("id"))
+            if channel_id not in enabled_channels:
+                continue
+
+            # Retrieve channel attributes with fallbacks
+            channel_name = custom_channel_names.get(channel_id, channel.get("name"))
+            genre_id = str(channel.get("tv_genre_id"))
+            genre = custom_genres.get(channel_id, genres.get(genre_id))
+            channel_number = custom_channel_numbers.get(channel_id, channel.get("number"))
+            epg_id = custom_epg_ids.get(channel_id, f"{portal_name}{channel_id}")
+            logo_url = channel.get("logo")
+
+            # Build the playlist entry
+            use_channel_numbers = getSettings().get("use channel numbers", "true") == "true"
+            use_channel_genres = getSettings().get("use channel genres", "true") == "true"
+
+            entry = (
+                f"#EXTINF:-1 tvg-id=\"{epg_id}\""
+                + (f' tvg-chno="{channel_number}"' if use_channel_numbers and channel_number else "")
+                + (f' tvg-logo="{logo_url}"' if logo_url else "")
+                + (f' group-title="{genre}"' if use_channel_genres and genre else "")
+                + f', {channel_name}\nhttp://{host}/play/{portal_name}/{channel_id}'
+            )
+            channels.append(entry)
+
+    # Sort the playlist based on user settings
     if getSettings().get("sort playlist by channel name", "true") == "true":
-        channels.sort(key=lambda k: k.split(",")[1].split("\n")[0])
-    if getSettings().get("use channel numbers", "true") == "true":
-        if getSettings().get("sort playlist by channel number", "false") == "true":
-            channels.sort(key=lambda k: k.split('tvg-chno="')[1].split('"')[0])
-    if getSettings().get("use channel genres", "true") == "true":
-        if getSettings().get("sort playlist by channel genre", "false") == "true":
-            channels.sort(key=lambda k: k.split('group-title="')[1].split('"')[0])
+        channels.sort(key=lambda x: x.split(",")[1].split("\n")[0])
+    if getSettings().get("use channel numbers", "true") == "true" and \
+       getSettings().get("sort playlist by channel number", "false") == "true":
+        channels.sort(key=lambda x: x.split('tvg-chno="')[1].split('"')[0])
+    if getSettings().get("use channel genres", "true") == "true" and \
+       getSettings().get("sort playlist by channel genre", "false") == "true":
+        channels.sort(key=lambda x: x.split('group-title="')[1].split('"')[0])
 
-    playlist = "#EXTM3U \n"
-    playlist = playlist + "\n".join(channels)
+    # Combine all channels into a single playlist
+    playlist = "#EXTM3U\n" + "\n".join(channels)
 
+    # Return the playlist as a plain text response
     return Response(playlist, mimetype="text/plain")
+
 
 
 @app.route("/xmltv", methods=["GET"])
