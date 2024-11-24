@@ -444,7 +444,7 @@ def getChannelByMac(portalId, channelId, mac):
     url = portal.get("url")
     streamsPerMac = int(portal.get("streams per mac"))
     proxy = portal.get("proxy")
-
+    time_zone = portal.get("time_zone")
     freeMac = False
     channels = None
     cmd = None
@@ -1000,7 +1000,7 @@ def playlist():
         url = portal_data["url"]
         macs = list(portal_data["macs"].keys())
         proxy = portal_data["proxy"]
-        time_zone = portals[portal]["time_zone"]
+        time_zone = portal_data["time_zone"]
         custom_channel_names = portal_data.get("custom channel names", {})
         custom_genres = portal_data.get("custom genres", {})
         custom_channel_numbers = portal_data.get("custom channel numbers", {})
