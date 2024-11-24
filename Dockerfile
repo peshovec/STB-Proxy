@@ -1,7 +1,7 @@
 ##########
 # BASE
 ##########
-FROM alpine:latest AS base
+FROM python:3.12-alpine AS base
 
 ENV HOST=localhost
 ENV CONFIG=/config/config.json
@@ -9,17 +9,16 @@ ENV FLASK_ENV="docker"
 ENV PIP_BREAK_SYSTEM_PACKAGES=true
 
 # Install required system packages
-RUN apk add \
-	ffmpeg \
-	py3-pip \
-	tzdata
+RUN apk add --no-cache \
+    ffmpeg \
+    tzdata
 
 # Install pip requirements
-RUN pip3 install --break-system-packages \
-	flask \
-	requests \
-	waitress \
-	python-dateutil
+RUN pip install --no-cache-dir \
+    flask \
+    requests \
+    waitress \
+    python-dateutil
 
 # Copy app files
 COPY /app /app
@@ -41,6 +40,10 @@ ENV PYTHONUNBUFFERED=1
 #RUN adduser -u 5678 --disabled-password --gecos "" appuser && chown -R appuser /app
 #USER appuser
 
+# Install debugpy for debugging
+RUN pip install --no-cache-dir \
+    debugpy
+
 # During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
 CMD ["python", "app.py"]
 
@@ -49,4 +52,4 @@ CMD ["python", "app.py"]
 ##########
 FROM base AS release
 
-ENTRYPOINT ["python3","-u","app.py"]
+ENTRYPOINT ["python", "-u", "app.py"]
