@@ -176,10 +176,6 @@
     /* Create an array with the values of all the text boxes in a column */
     $.fn.dataTable.ext.order['dom-text'] = function (settings, col) {
         return this.api().column(col, { order: 'index' }).nodes().map(function (td, i) {
-            search: {
-                return: true,
-                smart: false,
-            },
             var val = $('input', td).val();
             return val === '' ? $('input', td).attr('placeholder') : val;
         });
@@ -190,6 +186,10 @@
             dom: "<'row m-1'<'col-auto'B><'col-auto ms-auto'f><'col-auto'l>>" +
                 "<'row'<'col-12'tr>>" +
                 "<'row mb-1 mb-lg-0'<'col-auto text-light'i><'col-auto ms-auto'p>>",
+            search: {
+                return: true,
+                smart: false,
+            },
             orderFixed: [0, 'des'],
             order: [[0, 'des'], [2, 'asc']],
             pageLength: 25,
