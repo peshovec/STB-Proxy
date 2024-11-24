@@ -29,6 +29,9 @@ import waitress
 from collections import defaultdict
 import copy
 
+# Lock for multi-threading  
+lock = threading.Lock()
+
 app = Flask(__name__)
 app.secret_key = secrets.token_urlsafe(32)
 
@@ -383,8 +386,8 @@ def isMacFree(portalId, mac):
     streamsPerMac = int(portal.get("streams per mac"))
     
     # When changing channels, it takes a while until the stream is finished and the Mac address gets released    
-    checkInterval=0.1
-    maxIterations = max(math.ceil(maxWaitTimeFree/checkInterval),1)
+    checkInterval = 0.1
+    maxIterations = max(math.ceil(maxWaitTimeFree / checkInterval), 1)
     for _ in range(maxIterations):
         count = 0
         for i in occupied.get(portalId, []):
@@ -394,7 +397,7 @@ def isMacFree(portalId, mac):
             return True
         else:
             time.sleep(0.1)
-    return False 
+    return False
 
 
 def getChannel(portalId, channelId):
@@ -436,6 +439,9 @@ def getChannel(portalId, channelId):
 
 
 def getChannelByMac(portalId, channelId, mac):
+    channelName= None
+    link = None
+    
     # Portal data
     portals = getPortals()
     portal = portals.get(portalId)
@@ -448,7 +454,6 @@ def getChannelByMac(portalId, channelId, mac):
     freeMac = False
     channels = None
     cmd = None
-    link = None
     if streamsPerMac == 0 or isMacFree(portalId, mac):
         logger.info(
             "Trying to get Link for Portal({}):MAC({}):Channel({})".format(portalId, mac, channelId)
@@ -1388,23 +1393,23 @@ def channel(portalId, channelId):
     logger.info(
         "IP({}) requested Portal({}):Channel({})".format(ip, portalId, channelId)
     )
-
-    channelName, link, mac = getChannel(portalId, channelId)
-    if link:
-        if getSettings().get("test streams", "true") == "false" or testStream(link, proxy):
-            # update statistics
-            portal["macs"][mac]["stats"]["requests"] += 1
-            savePortals(portals)
-            
-            # start streaming
-            if getSettings().get("stream method", "ffmpeg") != "redirect":
-                return Response(
-                    stream_with_context(streamData()), mimetype="application/octet-stream"
-                )
-            else:
-                logger.info("Redirect sent")
-                return redirect(link)
-            
+    with lock:
+        channelName, link, mac = getChannel(portalId, channelId)
+        if link:
+            if getSettings().get("test streams", "true") == "false" or testStream(link, proxy):
+                # update statistics
+                portal["macs"][mac]["stats"]["requests"] += 1
+                savePortals(portals)
+                
+                # start streaming
+                if getSettings().get("stream method", "ffmpeg") != "redirect":
+                    return Response(
+                        stream_with_context(streamData()), mimetype="application/octet-stream"
+                    )
+                else:
+                    logger.info("Redirect sent")
+                    return redirect(link)
+                
     logger.info(
         "Unable to connect to Portal({}) using MAC({})".format(portalId, mac)
     )
@@ -1425,34 +1430,35 @@ def channel(portalId, channelId):
                 if channelName in fallbackChannels.values():
                     for k, v in fallbackChannels.items():
                         if v == channelName:
-                            fChannelId = k
-                            fChannelName = v
-                            try:
-                                channelName, link, mac = getChannel(fportalId, fChannelId)
-                            except:
-                                link = None
-                                channelName = None
-                                logger.info(
-                                    "Unable to connect to fallback Portal({})".format(fportalId)
-                                )
-                            if link:
-                                if testStream(link, proxy):
+                            with lock:
+                                fChannelId = k
+                                fChannelName = v
+                                try:
+                                    channelName, link, mac = getChannel(fportalId, fChannelId)
+                                except:
+                                    link = None
+                                    channelName = None
                                     logger.info(
-                                        "Fallback found for Portal({}):Channel({})".format(fportalId, fChannelId)
+                                        "Unable to connect to fallback Portal({})".format(fportalId)
                                     )
-                                    # update statistics
-                                    fportal["macs"][mac]["stats"]["requests"] += 1
-                                    savePortals(portals)
-                                    
-                                    # start streaming
-                                    if getSettings().get("stream method", "ffmpeg") != "redirect":
-                                        return Response(
-                                            stream_with_context(streamData()),
-                                            mimetype="application/octet-stream",
+                                if link:
+                                    if testStream(link, proxy):
+                                        logger.info(
+                                            "Fallback found for Portal({}):Channel({})".format(fportalId, fChannelId)
                                         )
-                                    else:
-                                        logger.info("Redirect sent")
-                                        return redirect(link)
+                                        # update statistics
+                                        fportal["macs"][mac]["stats"]["requests"] += 1
+                                        savePortals(portals)
+                                        
+                                        # start streaming
+                                        if getSettings().get("stream method", "ffmpeg") != "redirect":
+                                            return Response(
+                                                stream_with_context(streamData()),
+                                                mimetype="application/octet-stream",
+                                            )
+                                        else:
+                                            logger.info("Redirect sent")
+                                            return redirect(link)
 
     logger.info(
         "No fallback found for Portal({}):Channel({})".format(portalId, channelId)
